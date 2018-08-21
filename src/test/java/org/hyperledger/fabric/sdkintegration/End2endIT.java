@@ -36,6 +36,7 @@ import java.util.regex.Pattern;
 //import java.time.LocalDateTime; //Mahima
 import java.util.Date;
 import java.text.SimpleDateFormat; //Mahima
+import java.util.concurrent.CompletableFuture;  //Mahima
 
 import org.apache.commons.codec.binary.Hex;
 import org.bouncycastle.openssl.PEMWriter;
@@ -70,6 +71,7 @@ import org.hyperledger.fabric.sdk.exception.ProposalException;
 import org.hyperledger.fabric.sdk.exception.TransactionEventException;
 import org.hyperledger.fabric.sdk.security.CryptoSuite;
 import org.hyperledger.fabric.sdk.testutils.TestConfig;
+import org.hyperledger.fabric.sdk.BlockEvent.TransactionEvent;  //Mahima
 import org.hyperledger.fabric_ca.sdk.EnrollmentRequest;
 import org.hyperledger.fabric_ca.sdk.HFCAClient;
 import org.hyperledger.fabric_ca.sdk.HFCAInfo;
@@ -420,6 +422,90 @@ public class End2endIT {
 
     }
 
+    CompletableFuture<TransactionEvent> instantiateChaincode (HFClient client, Channel channel, ChaincodeID chaincodeID, SampleOrg sampleOrg, int delta) {
+            final String channelName = channel.getName();
+            boolean isFooChain = FOO_CHANNEL_NAME.equals(channelName);
+            Collection<ProposalResponse> responses;
+            Collection<ProposalResponse> successful = new LinkedList<>();
+            Collection<ProposalResponse> failed = new LinkedList<>();
+            
+            try     {
+                //// Instantiate chaincode
+                InstantiateProposalRequest instantiateProposalRequest = client.newInstantiationProposalRequest();
+                instantiateProposalRequest.setProposalWaitTime(DEPLOYWAITTIME);
+                instantiateProposalRequest.setChaincodeID(chaincodeID);
+                instantiateProposalRequest.setChaincodeLanguage(CHAIN_CODE_LANG);
+                instantiateProposalRequest.setFcn("init");
+                instantiateProposalRequest.setArgs(new String[] {"a", "500", "b", "" + (200 + delta)});
+                Map<String, byte[]> tm = new HashMap<>();
+                tm.put("HyperLedgerFabric", "InstantiateProposalRequest:JavaSDK".getBytes(UTF_8));
+                tm.put("method", "InstantiateProposalRequest".getBytes(UTF_8));
+                instantiateProposalRequest.setTransientMap(tm);
+
+                /*
+                  policy OR(Org1MSP.member, Org2MSP.member) meaning 1 signature from someone in either Org1 or Org2
+                  See README.md Chaincode endorsement policies section for more details.
+                */
+                ChaincodeEndorsementPolicy chaincodeEndorsementPolicy = new ChaincodeEndorsementPolicy();
+                chaincodeEndorsementPolicy.fromYamlFile(new File(TEST_FIXTURES_PATH + "/sdkintegration/chaincodeendorsementpolicy.yaml"));
+                instantiateProposalRequest.setChaincodeEndorsementPolicy(chaincodeEndorsementPolicy);
+
+                out("Sending instantiateProposalRequest to all peers with arguments: a and b set to 100 and %s respectively", "" + (200 + delta));
+
+                if (isFooChain) {  //Send responses both ways with specifying peers and by using those on the channel.
+                    responses = channel.sendInstantiationProposal(instantiateProposalRequest, channel.getPeers());
+                } else {
+                    responses = channel.sendInstantiationProposal(instantiateProposalRequest);
+                }
+                for (ProposalResponse response : responses) {
+                    if (response.isVerified() && response.getStatus() == ProposalResponse.Status.SUCCESS) {
+                        successful.add(response);
+                        out("Succesful instantiate proposal response Txid: %s from peer %s", response.getTransactionID(), response.getPeer().getName());
+                    } else {
+                        failed.add(response);
+                    }
+                }
+                out("Received %d instantiate proposal responses. Successful+verified: %d . Failed: %d", responses.size(), successful.size(), failed.size());
+                if (failed.size() > 0) {
+                    for (ProposalResponse fail : failed) {
+
+                        out("Not enough endorsers for instantiate :" + successful.size() + "endorser failed with " + fail.getMessage() + ", on peer" + fail.getPeer());
+
+                    }
+                    ProposalResponse first = failed.iterator().next();
+                    fail("Not enough endorsers for instantiate :" + successful.size() + "endorser failed with " + first.getMessage() + ". Was verified:" + first.isVerified());
+                }
+
+                ///////////////
+                /// Send instantiate transaction to orderer
+                out("Sending instantiateTransaction to orderer with a and b set to 100 and %s respectively", "" + (200 + delta));
+
+                //Specify what events should complete the interest in this transaction. This is the default
+                // for all to complete. It's possible to specify many different combinations like
+                //any from a group, all from one group and just one from another or even None(NOfEvents.createNoEvents).
+                // See. Channel.NOfEvents
+                Channel.NOfEvents nOfEvents = createNofEvents();
+                if (!channel.getPeers(EnumSet.of(PeerRole.EVENT_SOURCE)).isEmpty()) {
+                    nOfEvents.addPeers(channel.getPeers(EnumSet.of(PeerRole.EVENT_SOURCE)));
+                }
+                if (!channel.getEventHubs().isEmpty()) {
+                    nOfEvents.addEventHubs(channel.getEventHubs());
+                }
+
+                return channel.sendTransaction(successful, createTransactionOptions() //Basically the default options but shows it's usage.
+                        .userContext(client.getUserContext()) //could be a different user context. this is the default.
+                        .shuffleOrders(false) // don't shuffle any orderers the default is true.
+                        .orderers(channel.getOrderers()) // specify the orderers we want to try this transaction. Fails once all Orderers are tried.
+                        .nOfEvents(nOfEvents) // The events to signal the completion of the interest in the transaction
+                );
+            } catch   (Exception e) {
+            out("Caught an exception while installing chaincode %s", chaincodeID.getName());
+            e.printStackTrace();
+            fail("Test failed with error : " + e.getMessage());
+        }
+        return null;
+    }
+
     //CHECKSTYLE.OFF: Method length is 320 lines (max allowed is 150).
     void runChannel(HFClient client, Channel channel, boolean installChaincode, SampleOrg sampleOrg, int delta) {
 
@@ -496,83 +582,15 @@ public class End2endIT {
             // Note installing chaincode does not require transaction no need to
             // send to Orderers
 
-            ///////////////
-            //// Instantiate chaincode.
-            InstantiateProposalRequest instantiateProposalRequest = client.newInstantiationProposalRequest();
-            instantiateProposalRequest.setProposalWaitTime(DEPLOYWAITTIME);
-            instantiateProposalRequest.setChaincodeID(chaincodeID);
-            instantiateProposalRequest.setChaincodeLanguage(CHAIN_CODE_LANG);
-            instantiateProposalRequest.setFcn("init");
-            instantiateProposalRequest.setArgs(new String[] {"a", "500", "b", "" + (200 + delta)});
-            Map<String, byte[]> tm = new HashMap<>();
-            tm.put("HyperLedgerFabric", "InstantiateProposalRequest:JavaSDK".getBytes(UTF_8));
-            tm.put("method", "InstantiateProposalRequest".getBytes(UTF_8));
-            instantiateProposalRequest.setTransientMap(tm);
+            /*Mahima*/
+            instantiateChaincode(client, channel, chaincodeID, sampleOrg, delta).thenApply(transactionEvent -> {
 
-            /*
-              policy OR(Org1MSP.member, Org2MSP.member) meaning 1 signature from someone in either Org1 or Org2
-              See README.md Chaincode endorsement policies section for more details.
-            */
-            ChaincodeEndorsementPolicy chaincodeEndorsementPolicy = new ChaincodeEndorsementPolicy();
-            chaincodeEndorsementPolicy.fromYamlFile(new File(TEST_FIXTURES_PATH + "/sdkintegration/chaincodeendorsementpolicy.yaml"));
-            instantiateProposalRequest.setChaincodeEndorsementPolicy(chaincodeEndorsementPolicy);
-
-            out("Sending instantiateProposalRequest to all peers with arguments: a and b set to 100 and %s respectively", "" + (200 + delta));
-            successful.clear();
-            failed.clear();
-
-            if (isFooChain) {  //Send responses both ways with specifying peers and by using those on the channel.
-                responses = channel.sendInstantiationProposal(instantiateProposalRequest, channel.getPeers());
-            } else {
-                responses = channel.sendInstantiationProposal(instantiateProposalRequest);
-            }
-            for (ProposalResponse response : responses) {
-                if (response.isVerified() && response.getStatus() == ProposalResponse.Status.SUCCESS) {
-                    successful.add(response);
-                    out("Succesful instantiate proposal response Txid: %s from peer %s", response.getTransactionID(), response.getPeer().getName());
-                } else {
-                    failed.add(response);
-                }
-            }
-            out("Received %d instantiate proposal responses. Successful+verified: %d . Failed: %d", responses.size(), successful.size(), failed.size());
-            if (failed.size() > 0) {
-                for (ProposalResponse fail : failed) {
-
-                    out("Not enough endorsers for instantiate :" + successful.size() + "endorser failed with " + fail.getMessage() + ", on peer" + fail.getPeer());
-
-                }
-                ProposalResponse first = failed.iterator().next();
-                fail("Not enough endorsers for instantiate :" + successful.size() + "endorser failed with " + first.getMessage() + ". Was verified:" + first.isVerified());
-            }
-
-            ///////////////
-            /// Send instantiate transaction to orderer
-            out("Sending instantiateTransaction to orderer with a and b set to 100 and %s respectively", "" + (200 + delta));
-
-            //Specify what events should complete the interest in this transaction. This is the default
-            // for all to complete. It's possible to specify many different combinations like
-            //any from a group, all from one group and just one from another or even None(NOfEvents.createNoEvents).
-            // See. Channel.NOfEvents
-            Channel.NOfEvents nOfEvents = createNofEvents();
-            if (!channel.getPeers(EnumSet.of(PeerRole.EVENT_SOURCE)).isEmpty()) {
-                nOfEvents.addPeers(channel.getPeers(EnumSet.of(PeerRole.EVENT_SOURCE)));
-            }
-            if (!channel.getEventHubs().isEmpty()) {
-                nOfEvents.addEventHubs(channel.getEventHubs());
-            }
-
-            channel.sendTransaction(successful, createTransactionOptions() //Basically the default options but shows it's usage.
-                    .userContext(client.getUserContext()) //could be a different user context. this is the default.
-                    .shuffleOrders(false) // don't shuffle any orderers the default is true.
-                    .orderers(channel.getOrderers()) // specify the orderers we want to try this transaction. Fails once all Orderers are tried.
-                    .nOfEvents(nOfEvents) // The events to signal the completion of the interest in the transaction
-            ).thenApply(transactionEvent -> {
-
+                out ("\n\n What is transactionEvent ", transactionEvent, " it ends\n\n");
                 waitOnFabric(0);
 
                 assertTrue(transactionEvent.isValid()); // must be valid to be here.
 
-                assertNotNull(transactionEvent.getSignature()); //musth have a signature.
+                assertNotNull(transactionEvent.getSignature()); //must have a signature.
                 BlockEvent blockEvent = transactionEvent.getBlockEvent(); // This is the blockevent that has this transaction.
                 assertNotNull(blockEvent.getBlock()); // Make sure the RAW Fabric block is returned.
 
