@@ -340,6 +340,86 @@ public class End2endIT {
         return pemStrWriter.toString();
     }
 
+    void installChaincode(HFClient client, Channel channel, boolean installChaincode, ChaincodeID chaincodeID, SampleOrg sampleOrg) {
+        
+        final String channelName = channel.getName();
+        boolean isFooChain = FOO_CHANNEL_NAME.equals(channelName);
+        Collection<ProposalResponse> responses;
+        Collection<ProposalResponse> successful = new LinkedList<>();
+        Collection<ProposalResponse> failed = new LinkedList<>();
+        try     {
+        if (installChaincode) {
+            ////////////////////////////
+            // Install Proposal Request
+            //
+
+            client.setUserContext(sampleOrg.getPeerAdmin());
+
+            out("Creating install proposal");
+
+            InstallProposalRequest installProposalRequest = client.newInstallProposalRequest();
+            installProposalRequest.setChaincodeID(chaincodeID);
+
+            if (isFooChain) {
+                // on foo chain install from directory.
+
+                ////For GO language and serving just a single user, chaincodeSource is mostly likely the users GOPATH
+                installProposalRequest.setChaincodeSourceLocation(Paths.get(TEST_FIXTURES_PATH, CHAIN_CODE_FILEPATH).toFile());
+            } else {
+                // On bar chain install from an input stream.
+
+                if (CHAIN_CODE_LANG.equals(Type.GO_LANG)) {
+
+                    installProposalRequest.setChaincodeInputStream(Util.generateTarGzInputStream(
+                            (Paths.get(TEST_FIXTURES_PATH, CHAIN_CODE_FILEPATH, "src", CHAIN_CODE_PATH).toFile()),
+                            Paths.get("src", CHAIN_CODE_PATH).toString()));
+                } else {
+                    installProposalRequest.setChaincodeInputStream(Util.generateTarGzInputStream(
+                            (Paths.get(TEST_FIXTURES_PATH, CHAIN_CODE_FILEPATH).toFile()),
+                            "src"));
+                }
+            }
+
+            installProposalRequest.setChaincodeVersion(CHAIN_CODE_VERSION);
+            installProposalRequest.setChaincodeLanguage(CHAIN_CODE_LANG);
+
+            out("Sending install proposal");
+
+            ////////////////////////////
+            // only a client from the same org as the peer can issue an install request
+            int numInstallProposal = 0;
+            //    Set<String> orgs = orgPeers.keySet();
+            //   for (SampleOrg org : testSampleOrgs) {
+
+            Collection<Peer> peers = channel.getPeers();
+            numInstallProposal = numInstallProposal + peers.size();
+            responses = client.sendInstallProposal(installProposalRequest, peers);
+
+            for (ProposalResponse response : responses) {
+                if (response.getStatus() == ProposalResponse.Status.SUCCESS) {
+                    out("Successful install proposal response Txid: %s from peer %s", response.getTransactionID(), response.getPeer().getName());
+                    successful.add(response);
+                } else {
+                    failed.add(response);
+                }
+            }
+
+            //   }
+            out("Received %d install proposal responses. Successful+verified: %d . Failed: %d", numInstallProposal, successful.size(), failed.size());
+
+            if (failed.size() > 0) {
+                ProposalResponse first = failed.iterator().next();
+                fail("Not enough endorsers for install :" + successful.size() + ".  " + first.getMessage());
+            }
+        }
+    }   catch   (Exception e) {
+            out("Caught an exception while installing chaincode %s", chaincodeID.getName());
+            e.printStackTrace();
+            fail("Test failed with error : " + e.getMessage());
+        }
+
+    }
+
     //CHECKSTYLE.OFF: Method length is 320 lines (max allowed is 150).
     void runChannel(HFClient client, Channel channel, boolean installChaincode, SampleOrg sampleOrg, int delta) {
 
@@ -406,70 +486,10 @@ public class End2endIT {
             }
             chaincodeID = chaincodeIDBuilder.build();
 
-            if (installChaincode) {
-                ////////////////////////////
-                // Install Proposal Request
-                //
-
-                client.setUserContext(sampleOrg.getPeerAdmin());
-
-                out("Creating install proposal");
-
-                InstallProposalRequest installProposalRequest = client.newInstallProposalRequest();
-                installProposalRequest.setChaincodeID(chaincodeID);
-
-                if (isFooChain) {
-                    // on foo chain install from directory.
-
-                    ////For GO language and serving just a single user, chaincodeSource is mostly likely the users GOPATH
-                    installProposalRequest.setChaincodeSourceLocation(Paths.get(TEST_FIXTURES_PATH, CHAIN_CODE_FILEPATH).toFile());
-                } else {
-                    // On bar chain install from an input stream.
-
-                    if (CHAIN_CODE_LANG.equals(Type.GO_LANG)) {
-
-                        installProposalRequest.setChaincodeInputStream(Util.generateTarGzInputStream(
-                                (Paths.get(TEST_FIXTURES_PATH, CHAIN_CODE_FILEPATH, "src", CHAIN_CODE_PATH).toFile()),
-                                Paths.get("src", CHAIN_CODE_PATH).toString()));
-                    } else {
-                        installProposalRequest.setChaincodeInputStream(Util.generateTarGzInputStream(
-                                (Paths.get(TEST_FIXTURES_PATH, CHAIN_CODE_FILEPATH).toFile()),
-                                "src"));
-                    }
-                }
-
-                installProposalRequest.setChaincodeVersion(CHAIN_CODE_VERSION);
-                installProposalRequest.setChaincodeLanguage(CHAIN_CODE_LANG);
-
-                out("Sending install proposal");
-
-                ////////////////////////////
-                // only a client from the same org as the peer can issue an install request
-                int numInstallProposal = 0;
-                //    Set<String> orgs = orgPeers.keySet();
-                //   for (SampleOrg org : testSampleOrgs) {
-
-                Collection<Peer> peers = channel.getPeers();
-                numInstallProposal = numInstallProposal + peers.size();
-                responses = client.sendInstallProposal(installProposalRequest, peers);
-
-                for (ProposalResponse response : responses) {
-                    if (response.getStatus() == ProposalResponse.Status.SUCCESS) {
-                        out("Successful install proposal response Txid: %s from peer %s", response.getTransactionID(), response.getPeer().getName());
-                        successful.add(response);
-                    } else {
-                        failed.add(response);
-                    }
-                }
-
-                //   }
-                out("Received %d install proposal responses. Successful+verified: %d . Failed: %d", numInstallProposal, successful.size(), failed.size());
-
-                if (failed.size() > 0) {
-                    ProposalResponse first = failed.iterator().next();
-                    fail("Not enough endorsers for install :" + successful.size() + ".  " + first.getMessage());
-                }
-            }
+            /*
+            Mahima - Here installChaincode was there
+            */
+            installChaincode(client, channel, installChaincode, chaincodeID, sampleOrg);
 
             //   client.setUserContext(sampleOrg.getUser(TEST_ADMIN_NAME));
             //  final ChaincodeID chaincodeID = firstInstallProposalResponse.getChaincodeID();
@@ -1048,7 +1068,7 @@ class Threadtxn extends Thread {
         //DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");  
         SimpleDateFormat dtf = new SimpleDateFormat("HH:mm:ss");
         //fw.write("Transaction IDs" + " " + "propRequestTime" + " " + "propResponseTime" + " " + "sendTxTime" + " " + "commitTime" + "\n");
-        for (int loop = 0 ; loop < 250 ; loop++) {
+        for (int loop = 0 ; loop < 10 ; loop++) {
             try {
         
                 FileWriter fw = new FileWriter("Experiment1.txt", true);    
