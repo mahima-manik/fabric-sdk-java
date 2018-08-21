@@ -1,3 +1,4 @@
+//changes
 /*
  *  Copyright 2016, 2017 DTCC, Fujitsu Australia Software Technology, IBM - All Rights Reserved.
  *
@@ -15,6 +16,7 @@
 package org.hyperledger.fabric.sdkintegration;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.net.MalformedURLException;
@@ -31,6 +33,9 @@ import java.util.Set;
 import java.util.Vector;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
+//import java.time.LocalDateTime; //Mahima
+import java.util.Date;
+import java.text.SimpleDateFormat; //Mahima
 
 import org.apache.commons.codec.binary.Hex;
 import org.bouncycastle.openssl.PEMWriter;
@@ -99,6 +104,8 @@ public class End2endIT {
 
     private static final String FOO_CHANNEL_NAME = "foo";
     private static final String BAR_CHANNEL_NAME = "bar";
+
+    private static final int numberofthreads = 4;   //Mahima
 
     private static final int DEPLOYWAITTIME = testConfig.getDeployWaitTime();
 
@@ -553,100 +560,35 @@ public class End2endIT {
 
                 try {
                     assertEquals(blockEvent.getChannelId(), channel.getName());
-                    successful.clear();
-                    failed.clear();
-
-                    client.setUserContext(sampleOrg.getUser(TESTUSER_1_NAME));
-
-                    ///////////////
-                    /// Send transaction proposal to all peers
-                    TransactionProposalRequest transactionProposalRequest = client.newTransactionProposalRequest();
-                    transactionProposalRequest.setChaincodeID(chaincodeID);
-                    transactionProposalRequest.setChaincodeLanguage(CHAIN_CODE_LANG);
-                    //transactionProposalRequest.setFcn("invoke");
-                    transactionProposalRequest.setFcn("move");
-                    transactionProposalRequest.setProposalWaitTime(testConfig.getProposalWaitTime());
-                    transactionProposalRequest.setArgs("a", "b", "100");
-
-                    Map<String, byte[]> tm2 = new HashMap<>();
-                    tm2.put("HyperLedgerFabric", "TransactionProposalRequest:JavaSDK".getBytes(UTF_8)); //Just some extra junk in transient map
-                    tm2.put("method", "TransactionProposalRequest".getBytes(UTF_8)); // ditto
-                    tm2.put("result", ":)".getBytes(UTF_8));  // This should be returned see chaincode why.
-                    tm2.put(EXPECTED_EVENT_NAME, EXPECTED_EVENT_DATA);  //This should trigger an event see chaincode why.
-
-                    transactionProposalRequest.setTransientMap(tm2);
-
-                    out("sending transactionProposal to all peers with arguments: move(a,b,100)");
-
-                    //  Collection<ProposalResponse> transactionPropResp = channel.sendTransactionProposalToEndorsers(transactionProposalRequest);
-                    Collection<ProposalResponse> transactionPropResp = channel.sendTransactionProposal(transactionProposalRequest, channel.getPeers());
-                    for (ProposalResponse response : transactionPropResp) {
-                        if (response.getStatus() == ProposalResponse.Status.SUCCESS) {
-                            out("Successful transaction proposal response Txid: %s from peer %s", response.getTransactionID(), response.getPeer().getName());
-                            successful.add(response);
-                        } else {
-                            failed.add(response);
-                        }
+                    
+                    out("-----------------------------------------------");
+                    out("Invoking the Chaincode");
+                    out("-----------------------------------------------");
+   
+                Threadtxn T[] = new Threadtxn[numberofthreads];
+                for (int i = 0; i < numberofthreads; i++) {
+                    //SampleOrg sampleOrg = testConfig.getIntegrationTestsSampleOrg("peerOrg" + (i + 1));
+                    //sampleOrg = testConfig.getIntegrationTestsSampleOrg("peerOrg" + (i + 1));
+                    T[i] = new Threadtxn("Thread-" + i, client, chaincodeID, testConfig, channel, sampleOrg, i);
+                    T[i].start();
+                }
+                
+                for (int i = 0; i < numberofthreads; i++) {
+                    try {
+                        T[i].join();
+                    } catch (Exception e) {
+                        ;
                     }
+                }
 
-                    // Check that all the proposals are consistent with each other. We should have only one set
-                    // where all the proposals above are consistent. Note the when sending to Orderer this is done automatically.
-                    //  Shown here as an example that applications can invoke and select.
-                    // See org.hyperledger.fabric.sdk.proposal.consistency_validation config property.
-                    Collection<Set<ProposalResponse>> proposalConsistencySets = SDKUtils.getProposalConsistencySets(transactionPropResp);
-                    if (proposalConsistencySets.size() != 1) {
-                        fail(format("Expected only one set of consistent proposal responses but got %d", proposalConsistencySets.size()));
-                    }
-
-                    out("Received %d transaction proposal responses. Successful+verified: %d . Failed: %d",
-                            transactionPropResp.size(), successful.size(), failed.size());
-                    if (failed.size() > 0) {
-                        ProposalResponse firstTransactionProposalResponse = failed.iterator().next();
-                        fail("Not enough endorsers for invoke(move a,b,100):" + failed.size() + " endorser error: " +
-                                firstTransactionProposalResponse.getMessage() +
-                                ". Was verified: " + firstTransactionProposalResponse.isVerified());
-                    }
-                    out("Successfully received transaction proposal responses.");
-
-                    ProposalResponse resp = successful.iterator().next();
-                    byte[] x = resp.getChaincodeActionResponsePayload(); // This is the data returned by the chaincode.
-                    String resultAsString = null;
-                    if (x != null) {
-                        resultAsString = new String(x, "UTF-8");
-                    }
-                    assertEquals(":)", resultAsString);
-
-                    assertEquals(200, resp.getChaincodeActionResponseStatus()); //Chaincode's status.
-
-                    TxReadWriteSetInfo readWriteSetInfo = resp.getChaincodeActionResponseReadWriteSetInfo();
-                    //See blockwalker below how to transverse this
-                    assertNotNull(readWriteSetInfo);
-                    assertTrue(readWriteSetInfo.getNsRwsetCount() > 0);
-
-                    ChaincodeID cid = resp.getChaincodeID();
-                    assertNotNull(cid);
-                    final String path = cid.getPath();
-                    if (null == CHAIN_CODE_PATH) {
-                        assertTrue(path == null || "".equals(path));
-
-                    } else {
-
-                        assertEquals(CHAIN_CODE_PATH, path);
-
-                    }
-
-                    assertEquals(CHAIN_CODE_NAME, cid.getName());
-                    assertEquals(CHAIN_CODE_VERSION, cid.getVersion());
-
-                    ////////////////////////////
-                    // Send Transaction Transaction to orderer
-                    out("Sending chaincode transaction(move a,b,100) to orderer.");
-                    return channel.sendTransaction(successful).get(testConfig.getTransactionWaitTime(), TimeUnit.SECONDS);
+                out("----------------------------------------");
+                out("Exiting the threads");
+                out("----------------------------------------");
 
                 } catch (Exception e) {
-                    out("Caught an exception while invoking chaincode");
-                    e.printStackTrace();
-                    fail("Failed invoking chaincode with error : " + e.getMessage());
+                        out("Caught an exception while invoking chaincode");
+                        e.printStackTrace();
+                        fail("Failed invoking chaincode with error : " + e.getMessage());
                 }
 
                 return null;
@@ -656,7 +598,7 @@ public class End2endIT {
 
                     waitOnFabric(0);
 
-                    assertTrue(transactionEvent.isValid()); // must be valid to be here.
+                    /*assertTrue(transactionEvent.isValid()); // must be valid to be here.
                     out("Finished transaction with transaction id %s", transactionEvent.getTransactionID());
                     testTxID = transactionEvent.getTransactionID(); // used in the channel queries later
 
@@ -686,7 +628,7 @@ public class End2endIT {
                             out("Query payload of b from peer %s returned %s", proposalResponse.getPeer().getName(), payload);
                             assertEquals(payload, expect);
                         }
-                    }
+                    }*/
 
                     return null;
                 } catch (Exception e) {
@@ -1083,6 +1025,158 @@ class Threadtxn extends Thread {
         sampleOrg = org;
         index = ind;
         System.out.println("Creating " + threadName);
+    }
+
+    public void run() {
+        
+        out("-----------------------------------------------------");
+        out("Running " + threadName);
+        out("-----------------------------------------------------");
+
+        String TEST_ADMIN_NAME = "admin";
+        String TESTUSER_1_NAME = "user1";
+        String TEST_FIXTURES_PATH = "src/test/fixture";
+
+        String CHAIN_CODE_NAME = "example_cc_go";
+        String CHAIN_CODE_PATH = "github.com/example_cc";
+        byte[] EXPECTED_EVENT_DATA = "!".getBytes(UTF_8);
+        String CHAIN_CODE_VERSION = "1";
+        String FOO_CHANNEL_NAME = "foo";
+        String EXPECTED_EVENT_NAME = "event";
+        String CHAIN_CODE_FILEPATH = "sdkintegration/gocc/sample1";
+        Type CHAIN_CODE_LANG = Type.GO_LANG;
+        //DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");  
+        SimpleDateFormat dtf = new SimpleDateFormat("HH:mm:ss");
+        //fw.write("Transaction IDs" + " " + "propRequestTime" + " " + "propResponseTime" + " " + "sendTxTime" + " " + "commitTime" + "\n");
+        for (int loop = 0 ; loop < 250 ; loop++) {
+            try {
+        
+                FileWriter fw = new FileWriter("Experiment1.txt", true);    
+                
+                successful.clear();
+                failed.clear();
+    
+                client.setUserContext(sampleOrg.getUser(TESTUSER_1_NAME));
+
+                Thread.sleep(1000);
+
+                //////////////
+                /// Send transaction proposal to all peers
+                TransactionProposalRequest transactionProposalRequest = client.newTransactionProposalRequest();
+                transactionProposalRequest.setChaincodeID(chaincodeID);
+                transactionProposalRequest.setChaincodeLanguage(CHAIN_CODE_LANG);
+                //transactionProposalRequest.setFcn("invoke");
+                transactionProposalRequest.setFcn("move");
+                transactionProposalRequest.setProposalWaitTime(testConfig.getProposalWaitTime());
+                transactionProposalRequest.setArgs("a", "b", "1");
+
+                Map<String, byte[]> tm2 = new HashMap<>();
+                tm2.put("HyperLedgerFabric", "TransactionProposalRequest:JavaSDK".getBytes(UTF_8)); //Just some extra junk in transient map
+                tm2.put("method", "TransactionProposalRequest".getBytes(UTF_8)); // ditto
+                tm2.put("result", ":)".getBytes(UTF_8));  // This should be returned see chaincode why.
+                tm2.put(EXPECTED_EVENT_NAME, EXPECTED_EVENT_DATA);  //This should trigger an event see chaincode why.
+
+                transactionProposalRequest.setTransientMap(tm2);
+
+                out("----------------------------------------------------------------------------");
+                out("sending transactionProposal to all peers with arguments: move(a,b,100)");
+                out("----------------------------------------------------------------------------");
+
+                Date date = new Date();
+                String propRequestTime = dtf.format(date);   
+                long propReqTime = System.currentTimeMillis();
+
+                //  Collection<ProposalResponse> transactionPropResp = channel.sendTransactionProposalToEndorsers(transactionProposalRequest);
+                //Sendinf transaction proposal request to committing peers
+                Collection<ProposalResponse> transactionPropResp = channel.sendTransactionProposal(transactionProposalRequest, channel.getPeers());
+                
+                date = new Date();
+                String propResponseTime = dtf.format(date);
+                long propRespTime = (System.currentTimeMillis()-propReqTime); 
+
+                for (ProposalResponse response : transactionPropResp) {
+                    if (response.getStatus() == ProposalResponse.Status.SUCCESS) {
+                        out("Successful transaction proposal response Txid: %s from peer %s", response.getTransactionID(), response.getPeer().getName());
+                        successful.add(response);
+                    } else {
+                        failed.add(response);
+                    }
+                }
+
+                // Check that all the proposals are consistent with each other. We should have only one set
+                // where all the proposals above are consistent. Note the when sending to Orderer this is done automatically.
+                //  Shown here as an example that applications can invoke and select.
+                // See org.hyperledger.fabric.sdk.proposal.consistency_validation config property.
+                Collection<Set<ProposalResponse>> proposalConsistencySets = SDKUtils.getProposalConsistencySets(transactionPropResp);
+                if (proposalConsistencySets.size() != 1) {
+                    fail(format("Expected only one set of consistent proposal responses but got %d", proposalConsistencySets.size()));
+                }
+
+                out("Received %d transaction proposal responses. Successful+verified: %d . Failed: %d",
+                        transactionPropResp.size(), successful.size(), failed.size());
+                if (failed.size() > 0) {
+                    ProposalResponse firstTransactionProposalResponse = failed.iterator().next();
+                    fail("Not enough endorsers for invoke(move a,b,100):" + failed.size() + " endorser error: " +
+                            firstTransactionProposalResponse.getMessage() +
+                            ". Was verified: " + firstTransactionProposalResponse.isVerified());
+                }
+                out("Successfully received transaction proposal responses.");
+
+                ProposalResponse resp = successful.iterator().next();
+                byte[] x = resp.getChaincodeActionResponsePayload(); // This is the data returned by the chaincode.
+                String resultAsString = null;
+                if (x != null) {
+                    resultAsString = new String(x, "UTF-8");
+                }
+                assertEquals(":)", resultAsString);
+
+                assertEquals(200, resp.getChaincodeActionResponseStatus()); //Chaincode's status.
+
+                TxReadWriteSetInfo readWriteSetInfo = resp.getChaincodeActionResponseReadWriteSetInfo();
+                //See blockwalker below how to transverse this
+                assertNotNull(readWriteSetInfo);
+                assertTrue(readWriteSetInfo.getNsRwsetCount() > 0);
+
+                ChaincodeID cid = resp.getChaincodeID();
+                assertNotNull(cid);
+                final String path = cid.getPath();
+                if (null == CHAIN_CODE_PATH) {
+                    assertTrue(path == null || "".equals(path));
+
+            
+               } else {
+
+                    assertEquals(CHAIN_CODE_PATH, path);
+
+                }
+
+                assertEquals(CHAIN_CODE_NAME, cid.getName());
+                assertEquals(CHAIN_CODE_VERSION, cid.getVersion());
+
+                ////////////////////////////
+                // Send Transaction Transaction to orderer
+                
+                out("Sending chaincode transaction(move a,b,100) to orderer.");
+                
+                date = new Date();
+                String sendTxTime = dtf.format(date);
+                long sndTxTime = System.currentTimeMillis();
+
+                channel.sendTransaction(successful).get(testConfig.getTransactionWaitTime(), TimeUnit.SECONDS);
+
+                date = new Date();
+                String commitTime = dtf.format(date);
+                long cmtTime = (System.currentTimeMillis()-sndTxTime);
+
+                fw.write(resp.getTransactionID() + " " + propRequestTime + " " + propResponseTime +  " " + propRespTime + " " + sendTxTime + " " + commitTime + " " + cmtTime +"\n");
+                fw.close();
+        
+        }   catch (Exception e) {
+                    out("Caught an exception while invoking chaincode");
+                    e.printStackTrace();
+                    fail("Failed invoking chaincode with error : " + e.getMessage());
+            }
+        }
     }
 
     public static void out(String format, Object... args) {
